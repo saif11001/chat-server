@@ -3,10 +3,13 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import dotenv from "dotenv";
 import cors from "cors";
+import mongoose from "mongoose";
+import jwt from "jsonwebtoken";
 
 import { connectDB } from "./config/db.js";
 import { authenticateSocket } from "./middlewares/authMiddleware.js";
 import { Message } from "./models/message.model.js";
+import { User } from "./models/user.model.js";
 
 dotenv.config();
 
@@ -24,9 +27,6 @@ const io = new Server(server, {
 });
 
 app.get("/health", (req, res) => res.status(200).json({ ok: true }));
-
-import jwt from "jsonwebtoken";
-import { User } from "./models/user.model.js";
 
 const authenticateRequest = async (req, res, next) => {
     try {
@@ -112,14 +112,29 @@ io.use(authenticateSocket);
 io.on("connection", (socket) => {
     console.log(`User connected: ${socket.userId} (${socket.userRole})`);
 
+    const isCustomer = socket.userRole === "user";
+
     if (socket.userRole === "support" || socket.userRole === "admin") {
         socket.join("support_team");
     } else {
         socket.join(`user_${socket.userId}`);
     }
 
-    socket.on("chat message", async ({ conversationId, content }) => {
+    // The customer can only ever talk inside their own conversation.
+    // Staff choose the conversation, but it has to be a valid user id.
+    const resolveConversationId = (conversationId) => {
+        if (isCustomer) return socket.userId;
+        const id = String(conversationId ?? "");
+        return mongoose.isValidObjectId(id) ? id : null;
+    };
+
+    socket.on("chat message", async (payload) => {
         try {
+            const conversationId = resolveConversationId(payload?.conversationId);
+            const content = typeof payload?.content === "string" ? payload.content.trim() : "";
+
+            if (!conversationId || !content) return;
+
             const message = await Message.create({
                 conversationId,
                 senderId: socket.userId,
@@ -127,7 +142,7 @@ io.on("connection", (socket) => {
                 content
             });
 
-            if (socket.userRole === "user") {
+            if (isCustomer) {
                 io.to("support_team").emit("chat message", message);
                 io.to(`user_${socket.userId}`).emit("chat message", message);
             } else {
@@ -139,31 +154,40 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("typing", ({ conversationId }) => {
-        if (socket.userRole === "user") {
+    socket.on("typing", (payload) => {
+        const conversationId = resolveConversationId(payload?.conversationId);
+        if (!conversationId) return;
+
+        if (isCustomer) {
             socket.to("support_team").emit("typing", { conversationId, role: "user" });
         } else {
             socket.to(`user_${conversationId}`).emit("typing", { conversationId, role: "support" });
         }
     });
 
-    socket.on("stop typing", ({ conversationId }) => {
-        if (socket.userRole === "user") {
+    socket.on("stop typing", (payload) => {
+        const conversationId = resolveConversationId(payload?.conversationId);
+        if (!conversationId) return;
+
+        if (isCustomer) {
             socket.to("support_team").emit("stop typing", { conversationId, role: "user" });
         } else {
             socket.to(`user_${conversationId}`).emit("stop typing", { conversationId, role: "support" });
         }
     });
 
-    socket.on("mark read", async ({ conversationId }) => {
+    socket.on("mark read", async (payload) => {
         try {
-            const roleToMark = socket.userRole === "user" ? { $ne: "user" } : "user";
+            const conversationId = resolveConversationId(payload?.conversationId);
+            if (!conversationId) return;
+
+            const roleToMark = isCustomer ? { $ne: "user" } : "user";
             await Message.updateMany(
                 { conversationId, senderRole: roleToMark, isRead: false },
                 { $set: { isRead: true } }
             );
 
-            if (socket.userRole === "user") {
+            if (isCustomer) {
                 io.to("support_team").emit("messages read", { conversationId });
             } else {
                 io.to(`user_${conversationId}`).emit("messages read", { conversationId });
