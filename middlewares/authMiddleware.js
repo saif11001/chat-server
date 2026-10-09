@@ -10,6 +10,11 @@ export const authenticateSocket = async (socket, next) => {
         }
 
         const decoded = jwt.verify(token, process.env.ACCESS_TOKEN);
+
+        if (decoded.type !== "chat") {
+            return next(new Error("Not authenticated"));
+        }
+
         const user = await User.findById(decoded.userId);
 
         if (!user) {

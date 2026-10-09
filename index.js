@@ -1,7 +1,5 @@
 import express from "express";
 import { createServer } from "node:http";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { Server } from "socket.io";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -15,8 +13,6 @@ dotenv.config();
 const app = express();
 const server = createServer(app);
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
 app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(express.json());
 
@@ -27,9 +23,7 @@ const io = new Server(server, {
     }
 });
 
-app.get('/test', (req, res) => {
-  res.sendFile(join(__dirname, 'test.html'));
-});
+app.get("/health", (req, res) => res.status(200).json({ ok: true }));
 
 import jwt from "jsonwebtoken";
 import { User } from "./models/user.model.js";
@@ -41,6 +35,7 @@ const authenticateRequest = async (req, res, next) => {
         if (!token) return res.status(401).json({ message: "Not authenticated" });
 
         const decoded = jwt.verify(token, process.env.ACCESS_TOKEN);
+        if (decoded.type !== "chat") return res.status(401).json({ message: "Not authenticated" });
         const user = await User.findById(decoded.userId);
         if (!user) return res.status(401).json({ message: "User not found" });
 
